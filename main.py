@@ -38,7 +38,7 @@ from langchain.prompts import (
     HumanMessagePromptTemplate,
 )
 import os
-from learn import LearnTool, PineconeQueryTool, LearnAndQueryAgent
+from learn import LearnTool, IndexQueryTool, LearnAndQueryAgent
 import json
 from tokens_embedding import EmbeddingProcessor, TextProcessor
 
@@ -47,7 +47,7 @@ embedding_processor = EmbeddingProcessor()
 text_processor = TextProcessor()
 
 embeddings = OpenAIEmbeddings()
-PINECONE_API_KEY = "API_KEY"
+PINECONE_API_KEY = "068f95dc-2a64-4665-9d8d-2aa67205f07e"
 PINECONE_ENV = "asia-southeast1-gcp"
 
 index_name = "codegpt"
@@ -70,7 +70,7 @@ file_search = FileSearchTool()
 move_file = MoveFileTool()
 shell_tool = ShellTool()
 learn_tool = LearnTool()
-pinecone_query_tool = PineconeQueryTool
+pinecone_query_tool = IndexQueryTool()
 
 def count_tokens(chain, query):
     with get_openai_callback() as cb:

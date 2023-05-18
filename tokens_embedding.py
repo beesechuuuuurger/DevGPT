@@ -5,16 +5,14 @@ import numpy as np
 class EmbeddingProcessor:
     def __init__(self):
         self.embeddings = OpenAIEmbeddings()
-        self.encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-    def count_tokens(self, text):
-        tokens = self.encoding.encode(text)
-        return len(tokens)
-
-    def generate_embeddings(self, text):
-        tokens = self.encoding.encode(text)
-        embeddings = self.embeddings.embed_query(tokens)  # Assume 'embed' is the correct method
+    def generate_embeddings(self, documents):
+        embeddings = []
+        for text in documents:
+            embedding = self.embeddings.embed_query(text)  # Assume 'embed_query' is the correct method
+            embeddings.append(embedding)
         return embeddings
+    # ...
 
 
 

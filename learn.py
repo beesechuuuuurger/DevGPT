@@ -5,23 +5,16 @@ from langchain.callbacks.manager import (
     CallbackManagerForToolRun,
 )
 from langchain.tools.base import BaseTool
-import pinecone
-import json
-import spacy
-import numpy as np
 import openai
-from datetime import datetime
 import os
 from langchain.utilities import GoogleSearchAPIWrapper
-import time
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.agents import BaseMultiActionAgent
 from langchain.agents import AgentExecutor
 from tokens_embedding import EmbeddingProcessor, TextProcessor
 import itertools
-import requests
-
-
+from langchain.vectorstores import Chroma
+from langchain.text_splitter import CharacterTextSplitter
 class LearnToolArgs(BaseModel):
     query: str = Field(..., description="The query to learn about")
 
@@ -31,20 +24,19 @@ class LearnTool(BaseTool):
     args_schema: Type[BaseModel] = LearnToolArgs
     description: str = "Learn about a topic by searching the web and indexing the results."
     tools: dict = Field(default_factory=dict)  # Define tools as a Pydantic Field
+    persist_directory: str  = "D:\\DEV\\codeGPT\\codegpt\\vectorstore\\research_index" # Add this line
 
     def __init__(self):
         super().__init__()
         self.tools['search'] = GoogleSearchAPIWrapper()
         self.tools['text'] = TextProcessor()
-        self.tools['embeddings'] = EmbeddingProcessor()
-        os.environ["GOOGLE_CSE_ID"] = "API_KEY"
-        os.environ["GOOGLE_API_KEY"] = "api_key"
+        self.tools['embeddings'] = OpenAIEmbeddings()
+        os.environ["GOOGLE_CSE_ID"] = "c1563a217961c415f"
+        os.environ["GOOGLE_API_KEY"] = "AIzaSyBcK4qjqXfhHmZoJnSdMizKqXC2z51Zr5g"
         openai.api_key = os.getenv("OPENAI_API_KEY")
-        pinecone_api = "API_KEY"
-        pinecone_env = "asia-southeast1-gcp"
-        pinecone.init(api_key=pinecone_api, environment=pinecone_env)
-        self.tools['index'] = pinecone.Index(index_name="codegpt")
-
+        self.tools['text_splitter'] = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+        self.persist_directory = 'D:\\DEV\\codeGPT\\codegpt\\vectorstore\\research_index'
+        self.tools['index'] = Chroma(persist_directory=self.persist_directory, embedding_function=self.tools(['embeddings'].embed_documents))
 
     def _run(
         self,
@@ -180,32 +172,38 @@ class LearnTool(BaseTool):
             yield chunk
             chunk = tuple(itertools.islice(it, batch_size))
 
+
     def upsert_in_batches(self, vectors, batch_size=100):
         print("Running upsert_in_batches...")
         for i, batch in enumerate(self.chunks(vectors, batch_size)):
             print(f"Batch {i}: {batch}")
             try:
-                self.tools['index'].upsert(vectors=batch)
+                docs = self.text_splitter.split_documents(batch)
+                self.tools['index'] = Chroma.from_documents(docs, self.embedding, persist_directory=self.persist_directory)
+                self.tools['index'].persist()
                 print(f"Upserted batch {i + 1}/{(len(vectors) + batch_size - 1)//batch_size}")
             except Exception as e:
                 print(f"Error when upserting batch {i}: {e}")
                 print(f"Batch that caused error: {batch}")
                 continue  # Skip this batch and continue with the next one
 
-
-class PineconeQueryToolArgs(BaseModel):
-    index_name: str = Field(..., description="The name of the Pinecone index to query")
+class IndexQueryToolArgs(BaseModel):
+    index_name: str = Field(..., description="The name of the index to query")
     query: str = Field(..., description="The query to use")
 
-class PineconeQueryTool(BaseTool):
+class IndexQueryTool(BaseTool):
     name: str = "pinecone_query_tool"
-    args_schema: Type[BaseModel] = PineconeQueryToolArgs
+    args_schema: Type[BaseModel] = IndexQueryToolArgs
     description: str = "Query a Pinecone index."
     tools: dict = Field(default_factory=dict)
+    persist_directory: str  = "D:\\DEV\\codeGPT\\codegpt\\vectorstore\\research_index" 
 
     def __init__(self):
         super().__init__()
-        self.tools['index'] = pinecone.Index(index_name="codegpt")
+        self.tools['text'] = TextProcessor()
+        self.tools['embeddings'] = OpenAIEmbeddings()
+        self.persist_directory = 'D:\\DEV\\codeGPT\\codegpt\\vectorstore\\research_index'
+        self.tools['index'] = Chroma(persist_directory=self.persist_directory, embedding_function=self.tools['embeddings'].embed_documents)
 
     def _run(
         self,
@@ -224,7 +222,7 @@ class LearnAndQueryAgent(BaseMultiActionAgent):
         learn_tool_result = self.run_action(learn_tool_action)
 
         # Query the Pinecone index
-        query_action = AgentExecutor(tool="Pinecone_Query_Tool", input={"index_name": "codegpt", "query": input})
+        query_action = AgentExecutor(tool="Index_Query_Tool", input={"index_name": "codegpt", "query": input})
         query_result = self.run_action(query_action)
 
         return learn_tool_result, query_result
