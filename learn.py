@@ -38,11 +38,11 @@ class LearnTool(BaseTool):
         super().__init__()
         self.tools['search'] = GoogleSearchAPIWrapper(k=10)
         self.tools['embeddings'] = embedding_processor
-        os.environ["GOOGLE_CSE_ID"] = "cse-id"
-        os.environ["GOOGLE_API_KEY"] = "api-key"
+        os.environ["GOOGLE_CSE_ID"] = "c1563a217961c415f"
+        os.environ["GOOGLE_API_KEY"] = "AIzaSyBcK4qjqXfhHmZoJnSdMizKqXC2z51Zr5g"
         openai.api_key = os.getenv("OPENAI_API_KEY")
-        pinecone_api = "api-key"
-        pinecone_env = "env"
+        pinecone_api = "068f95dc-2a64-4665-9d8d-2aa67205f07e"
+        pinecone_env = "asia-southeast1-gcp"
         pinecone.init(api_key=pinecone_api, environment=pinecone_env)
         self.tools['index'] = pinecone.Index(index_name="codegpt")
     def _run(
@@ -113,14 +113,17 @@ class LearnTool(BaseTool):
             yield chunk
             chunk = tuple(itertools.islice(it, batch_size))
 
-
     def upsert_in_batches(self, vectors, batch_size=100):
         print("Running upsert_in_batches...")
         for i, batch in enumerate(LearnTool.chunks(vectors, batch_size)):
             print(f"Batch {i}: {batch}")
             vectors_dict = {id: vector for id, vector, metadata in batch}
-            self.tools['index'].upsert(vectors=vectors_dict)
-            print(f"Upserted batch {i + 1}/{(len(vectors) + batch_size - 1)//batch_size}")
+            try:
+                self.tools['index'].upsert(vectors=vectors_dict)
+                print(f"Upserted batch {i + 1}/{(len(vectors) + batch_size - 1)//batch_size}")
+            except Exception as e:
+                print(f"Error when upserting batch {i}: {e}")
+                print(f"Batch that caused error: {batch}")
 
 
 
