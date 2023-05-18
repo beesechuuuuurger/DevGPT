@@ -47,7 +47,7 @@ embedding_processor = EmbeddingProcessor()
 text_processor = TextProcessor()
 
 embeddings = OpenAIEmbeddings()
-PINECONE_API_KEY = "068f95dc-2a64-4665-9d8d-2aa67205f07e"
+PINECONE_API_KEY = "API_KEY"
 PINECONE_ENV = "asia-southeast1-gcp"
 
 index_name = "codegpt"

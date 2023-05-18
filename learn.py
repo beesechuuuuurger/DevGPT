@@ -19,10 +19,8 @@ from langchain.agents import BaseMultiActionAgent
 from langchain.agents import AgentExecutor
 from tokens_embedding import EmbeddingProcessor, TextProcessor
 import itertools
+import requests
 
-# Initialize the processors
-embedding_processor = EmbeddingProcessor()
-text_processor = TextProcessor()
 
 class LearnToolArgs(BaseModel):
     query: str = Field(..., description="The query to learn about")
@@ -36,30 +34,40 @@ class LearnTool(BaseTool):
 
     def __init__(self):
         super().__init__()
-        self.tools['search'] = GoogleSearchAPIWrapper(k=10)
-        self.tools['embeddings'] = embedding_processor
-        os.environ["GOOGLE_CSE_ID"] = "c1563a217961c415f"
-        os.environ["GOOGLE_API_KEY"] = "AIzaSyBcK4qjqXfhHmZoJnSdMizKqXC2z51Zr5g"
+        self.tools['search'] = GoogleSearchAPIWrapper()
+        self.tools['text'] = TextProcessor()
+        self.tools['embeddings'] = EmbeddingProcessor()
+        os.environ["GOOGLE_CSE_ID"] = "API_KEY"
+        os.environ["GOOGLE_API_KEY"] = "api_key"
         openai.api_key = os.getenv("OPENAI_API_KEY")
-        pinecone_api = "068f95dc-2a64-4665-9d8d-2aa67205f07e"
+        pinecone_api = "API_KEY"
         pinecone_env = "asia-southeast1-gcp"
         pinecone.init(api_key=pinecone_api, environment=pinecone_env)
         self.tools['index'] = pinecone.Index(index_name="codegpt")
+
+
     def _run(
         self,
         query: str,
         run_manager: Optional[CallbackManagerForToolRun] = None,
     ) -> str:
-        print("Running _run...")
-        title, text = self.process_url(query)
-        structured_data = text
-        print(f"Structured data: {structured_data[:100]}...")  # Print the first 100 characters of the structured data
-        pinecone_vectors = self.generate_embeddings(structured_data, query)
-        print(f"Pinecone vectors: {pinecone_vectors}")
-        self.upsert_in_batches(pinecone_vectors, batch_size=100)
-        results = self.tools['index'].query(query, top_k=10)
-        print(f"Results: {results}")
-        return results
+        try:
+            print("Running _run...")
+            title, text = self.process_url(query)
+            if not text:
+                print("No text found in the search results.")
+                text = ""
+            structured_data = text
+            print(f"Structured data: {structured_data[:100]}...")  # Print the first 100 characters of the structured data
+            prepared_data = self.generate_embeddings(structured_data, query)
+            print(f"Pinecone vectors: {prepared_data}")
+            self.upsert_in_batches(prepared_data, batch_size=100)
+            results = self.tools['index'].query(query, top_k=10)
+            print(f"Results: {results}")
+            return results
+        except Exception as e:
+            print(f"Error: {e}")
+            return "An error occurred."
 
     async def _arun(
         self,
@@ -67,42 +75,101 @@ class LearnTool(BaseTool):
         run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
     ) -> str:
         # Call your existing methods here
-        title, text = self.process_url(query)  # This is not an async function
+        title, text = await self.process_url(query)  # This is not an async function
         structured_data = text  # If you want to use the text part of the tuple
-        pinecone_vectors = self.generate_embeddings(structured_data, query)  # This is not an async function
-        self.upsert_in_batches(pinecone_vectors, batch_size=100)  # Specify batch size if different from default
-        # Query the Pinecone index instead of opening the JSON file
-        results = self.tools['index'].query(query, top_k=10)
-        return results
+        prepared_data = await self.generate_embeddings(structured_data, query)  # This is not an async function
+        await self.upsert_in_batches(prepared_data, batch_size=100) 
 
 
     def process_url(self, query):
         print("Running process_url...")
-        results = self.tools['search'].run(query)
-        print(f"Search results: {results[:100]}...")  # Print the first 100 characters of the search results
-        sentences = results.split('. ')
-        text = ' '.join(sentences[:1000])
-        if not text.strip():
-            return None, None
-        title = query
-        print(f"Title: {title}, Text: {text[:100]}...")  # Print the first 100 characters of the text
-        return title, text
+        # Run the GoogleSearchAPIWrapper tool
+        results = self.tools['search'].run({"q": query, "k": 10})
+        print(f"Search results: ",(results))
 
-    def generate_embeddings(self, content, query):
+        # Check if results is a string
+        if isinstance(results, str):
+            # Try to parse results into a dictionary
+            try:
+                import json
+                results = json.loads(results)
+            except json.JSONDecodeError:
+                print("Failed to parse results into a dictionary.")
+                return None, None
+
+        # Check if the results contain the expected 'results' field
+        if 'results' not in results:
+            print("Search results do not contain the expected 'results' field.")
+            return None, None
+
+        # Initialize empty lists for titles and texts
+        titles = []
+        texts = []
+
+        # Iterate over each result
+        for result in results['results']:
+            # Check if the result has the 'title' and 'full_content' fields
+            if 'title' in result and 'full_content' in result:
+                # Append the title and full_content to the respective lists
+                titles.append(result['title'])
+                texts.append(result['full_content'])
+
+        # Return the titles and texts
+        return titles, texts
+
+    def generate_embeddings(self, titles, texts):
+        if not texts:
+            print("No text to generate embeddings from.")
+            return [] 
         print("Running generate_embeddings...")
-        chunks = self.tools['embeddings'].split_text(content, 8000)
-        print(f"Chunks: {chunks[:5]}...")  # Print the first 5 chunks
-        embeddings = []
-        pinecone_vectors = []
-        for i, chunk in enumerate(chunks):
-            embedding = self.tools['embeddings'].generate_embeddings(chunk)
-            print(f"Embedding for chunk {i}: {embedding}")
-            vector = embedding
-            embeddings.append(vector)
-        mean_vector = np.mean(embeddings, axis=0).tolist()
-        pinecone_vectors.append((str(i), mean_vector, {"title": query[:100]}))
-        print(f"Generated embeddings: {pinecone_vectors}")
-        return pinecone_vectors
+        sentences = [self.tools['text'].split_text(text, 8000) for text in texts]
+        print(f"Sentences: {sentences[:5]}...")  # Print the first 5 sentences
+
+        embeddings = [self.tools['embeddings'].generate_embeddings(sentence) for sentence in sentences]
+        print(f"Embeddings: {embeddings}")
+
+        # Prepare data for Pinecone
+        pinecone_vectors = {title: embedding.tolist() for title, embedding in zip(titles, embeddings)}
+        prepared_data = self.prepare_data_for_pinecone(pinecone_vectors)
+
+        print(f"Generated embeddings: {prepared_data}")
+
+        return prepared_data
+
+
+
+    @staticmethod
+    def prepare_data_for_pinecone(data):
+        """
+        Prepare data for insertion into Pinecone.
+
+        Args:
+            data (dict): A dictionary where keys are unique identifiers (IDs) and values are the corresponding vectors.
+
+        Returns:
+            dict: A dictionary where keys are IDs and values are the corresponding vectors, ready for insertion into Pinecone.
+        """
+        # Ensure Pinecone is installed
+        try:
+            import pinecone
+        except ImportError:
+            raise ImportError("Pinecone module is not installed. Install it using 'pip install pinecone-client'.")
+
+        # Ensure data is a dictionary
+        if not isinstance(data, dict):
+            raise TypeError("Data must be a dictionary.")
+
+        # Ensure all values in the dictionary are lists (vectors)
+        for key, value in data.items():
+            if not isinstance(value, list):
+                raise TypeError(f"Value associated with key '{key}' is not a list.")
+
+        # Convert lists to Pinecone vectors
+        for key, value in data.items():
+            data[key] = pinecone.Vector(value)
+
+        return data
+
 
     @staticmethod
     def chunks(iterable, batch_size=100):
@@ -115,16 +182,15 @@ class LearnTool(BaseTool):
 
     def upsert_in_batches(self, vectors, batch_size=100):
         print("Running upsert_in_batches...")
-        for i, batch in enumerate(LearnTool.chunks(vectors, batch_size)):
+        for i, batch in enumerate(self.chunks(vectors, batch_size)):
             print(f"Batch {i}: {batch}")
-            vectors_dict = {id: vector for id, vector, metadata in batch}
             try:
-                self.tools['index'].upsert(vectors=vectors_dict)
+                self.tools['index'].upsert(vectors=batch)
                 print(f"Upserted batch {i + 1}/{(len(vectors) + batch_size - 1)//batch_size}")
             except Exception as e:
                 print(f"Error when upserting batch {i}: {e}")
                 print(f"Batch that caused error: {batch}")
-
+                continue  # Skip this batch and continue with the next one
 
 
 class PineconeQueryToolArgs(BaseModel):
