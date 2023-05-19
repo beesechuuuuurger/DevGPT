@@ -1,14 +1,17 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+
+
+
 from typing import List, Union, Dict
 from langchain.agents import Tool, initialize_agent, AgentType
-from langchain.tools.python.tool import PythonREPLTool
 from langchain.python import PythonREPL
 from langchain.tools import ShellTool
-from langchain.chains import LLMChain
 from tempfile import TemporaryDirectory
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain.embeddings import OpenAIEmbeddings
-from langchain.indexes.vectorstore import VectorstoreIndexCreator 
-from langchain.chains import ConversationChain
 from langchain.callbacks import get_openai_callback
 from langchain.memory import ConversationBufferMemory
 from langchain.chat_models import ChatOpenAI
@@ -37,18 +40,22 @@ from langchain.prompts import (
     HumanMessagePromptTemplate,
 )
 import os
-from learn import LearnTool
-import json
-from tokens_embedding import EmbeddingProcessor, TextProcessor
-from query import QueryHandler
+from scripts.learn import LearnTool
+from scripts.tokens_embedding import EmbeddingProcessor, TextProcessor
+from scripts.query import QueryHandler
 import os
-import stat
-from db_script import LocalIndex
-import langchain
+from scripts.db_script import LocalIndex
 import json
 from dotenv import load_dotenv
 import os
-
+from langchain.output_parsers import RetryWithErrorOutputParser
+from langchain.llms import OpenAI
+from langchain.output_parsers import PydanticOutputParser
+from pydantic import BaseModel, Field, validator
+from langchain.callbacks.base import BaseCallbackHandler
+import re
+from scripts.readmultiplefiles import ReadAllFilesInDirectoryTool
+from scripts.validation_agent import ValidateAndCorrectActionCallback
 load_dotenv()  # take environment variables from .env.
 
 openai_api_key = os.getenv('OPENAI_API_KEY')
@@ -65,9 +72,9 @@ embeddings = OpenAIEmbeddings()
 # Create a temporary directory for the file tools
 working_directory = TemporaryDirectory()
 
-llm = ChatOpenAI(streaming=True, callbacks=[StreamingStdOutCallbackHandler()], temperature=.8)
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+llm = ChatOpenAI(streaming=True, callbacks=[StreamingStdOutCallbackHandler()], temperature=0)
 working_directory = "D:\DEV\codeGPT\codegpt\llmchain\workspace"
+
 
 # Initialize the tools with the loaded configuration
 write_file = WriteFileTool()
@@ -82,7 +89,7 @@ list_directory = ListDirectoryTool()
 file_search = FileSearchTool()
 learn_tool = LearnTool()
 local_index = LocalIndex()
-
+read_multiple_files = ReadAllFilesInDirectoryTool()
 
 def count_tokens(chain, query):
     with get_openai_callback() as cb:
@@ -97,15 +104,15 @@ tools = [
         description="Get an answer for something basic.",
         func=search.run
     ),
-    #Tool(
-        #name="Learn_Tool",
-        #func=learn_tool.run,
-        #description="Learn about a complex topic by searching the web and indexing the results."
-    #),
+    Tool(
+        name="Learn_Tool",
+        func=learn_tool.run,
+        description="Learn about a complex topic by searching the web and indexing the results."
+    ),
     Tool(
         name="Python_repl",
-        description="A Python shell. Use this to execute python commands. Input should be a valid python command. If you want to see the output of a value, you should print it out with `print(...)`. When writing your Action Input DO NOT put '```' before or after your code",
-        func=python_repl.run
+        description="A Python shell. Use this to execute python commands. Input should be a valid python command, NOT DOCSTRING. If you want to see the output of a value, you should print it out with `print(...)`. ",
+    func=python_repl.run
     ),
     Tool(
         name="Write_File",
@@ -127,25 +134,30 @@ tools = [
         func=copy_file.run,
         description="Create a copy of a file to a specified location."
     ),
-    #Tool(
-    #    name="File_Delete",
-    #    func=file_delete.run,
-    #    description="Delete a file."
-    #),
+    Tool(
+        name="File_Delete",
+        func=file_delete.run,
+        description="Delete a file."
+    ),
     Tool(
         name="File_Search",
         func=file_search.run,
         description="Recursively search for files in a subdirectory that match the regex pattern."
     ),
-    #Tool(
-        #name="Move_File",
-        #func=move_file.run,
-        #description="Move or rename a file from one location to another."
-    #),
+    Tool(
+        name="Move_File",
+        func=move_file.run,
+        description="Move or rename a file from one location to another."
+    ),
     Tool(
         name="Shell_Tool",
         func=shell_tool.run,
         description=shell_tool.description
+    ),
+    Tool(
+       name="Read_All_Files_in_Directory",
+       func=read_multiple_files.run,
+       description="Read multiple files from disk"
     ),
 ]
 
@@ -154,14 +166,12 @@ template = """You are an AI assistant that can help with research, coding, and g
 {tools}
 
 
-Here is some context from a vector storage of the users input:
-{context}
 
 Use the following format:
 
 Input: the users input
 Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
+Action: the action to take
 Action Input: the input to the action
 Observation: the result of the action
 ... (this Thought/Action/Action Input/Observation can repeat N times)
@@ -171,7 +181,10 @@ Final Answer: the final answer to the original input question
 Begin! 
 
 Input: {input}
+
 {agent_scratchpad}"""
+
+
 
 class CustomPromptTemplate(BaseChatPromptTemplate):
     # The template to use
@@ -185,22 +198,19 @@ class CustomPromptTemplate(BaseChatPromptTemplate):
         intermediate_steps = kwargs.pop("intermediate_steps")
         thoughts = ""
         for action, observation in intermediate_steps:
-            thoughts += action.log
-            thoughts += f"\nObservation: {observation}\nThought: "
+            thoughts += "Action: " + action.action + "\n"
+            thoughts += "Action Input: " + json.dumps(action.action_input) + "\n"
+            thoughts += "Observation: " + observation + "\n"
+            thoughts += "Thought: "
         # Set the agent_scratchpad variable to that value
         kwargs["agent_scratchpad"] = thoughts
         # Create a tools variable from the list of tools provided
         kwargs["tools"] = "\n".join([f"{tool.name}: {tool.description}" for tool in self.tools])
         # Create a list of tool names for the tools provided
-        kwargs["tool_names"] = ", ".join([tool.name for tool in self.tools])
-        # Get the context from the Chroma indexes
-        context = QueryHandler.handle_query(query=kwargs["input"])
-        # Set the context variable to that value
-        kwargs["context"] = context
         formatted = self.template.format(**kwargs)
 
         # Initialize a CharacterTextSplitter with the model's maximum context length
-        splitter = CharacterTextSplitter(max_length=3800)
+        splitter = CharacterTextSplitter(max_length=3700)
 
         # Split the formatted prompt into chunks that do not exceed the model's maximum context length
         chunks = splitter.split(formatted)
@@ -210,17 +220,28 @@ class CustomPromptTemplate(BaseChatPromptTemplate):
 
         return [HumanMessage(content=formatted)]
 
+
+
+
 prompt = CustomPromptTemplate(
     template=template,
     tools=tools,
     # This omits the `agent_scratchpad`, `tools`, and `tool_names` variables because those are generated dynamically
     # This includes the `intermediate_steps` variable because that is needed
-    input_variables=["input", "intermediate_steps", "context"]
+    input_variables=["input", "intermediate_steps"]
 )
 
-if __name__ == "__main__":
 
-    agent_chain = initialize_agent(tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True, memory=memory)
+
+
+def run_agent_chain(user_input):
+    response = agent_chain.run(user_input)
+    return response
+
+if __name__ == "__main__":
+    # Initialize the agent with the callback
+    validate_action_callback = ValidateAndCorrectActionCallback()
+    agent_chain = initialize_agent(tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True, callbacks=[validate_action_callback])
 
     while True:
         try:
@@ -229,8 +250,10 @@ if __name__ == "__main__":
                 break
                 
             else:
-                response = agent_chain.run(user_input)
-                print(response)
+                # Run the agent chain with the user input
+                result = run_agent_chain(user_input)
+                # The result is already parsed and corrected by the ValidateAndCorrectActionCallback, so we can directly print it
+                print(result)
         except KeyboardInterrupt:
             print("\nExiting...")
             break

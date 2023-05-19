@@ -1,4 +1,3 @@
-
 from typing import Optional, Type
 from pydantic import BaseModel, Field
 from langchain.callbacks.manager import (
@@ -12,11 +11,11 @@ from langchain.utilities import GoogleSearchAPIWrapper
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.agents import BaseMultiActionAgent
 from langchain.agents import AgentExecutor
-from tokens_embedding import TextProcessor
 import itertools
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings.openai import OpenAIEmbeddings
 from db_script import LocalIndex
+from .tokens_embedding import TextProcessor
 from dotenv import load_dotenv
 import os
 

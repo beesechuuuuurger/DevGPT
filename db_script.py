@@ -17,7 +17,7 @@ class LocalIndex:
         self.persist_directory = persist_directory
         self.embedding = OpenAIEmbeddings()
         self.text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-        self.chat_history_db = None
+
         self.research_db = None
         self.documents_db = None
 
@@ -53,5 +53,34 @@ class LocalIndex:
             return self.research_db.similarity_search_with_score(query)
         elif index_type == 'documents':
             return self.documents_db.similarity_search_with_score(query)
+        else:
+            raise ValueError(f"Unsupported index type: {index_type}")
+        
+    def update_index(self, new_docs, index_type):
+        # Load the new documents
+        documents = [self.load_document(doc_path) for doc_path in new_docs]
+
+        # Split the new documents into chunks
+        chunks = [self.split_document(doc) for doc in documents]
+
+        # Generate embeddings for the new chunks
+        embeddings = [self.generate_embeddings(chunk) for chunk in chunks]
+
+        # Load the existing index
+        self.load_index(index_type)
+
+        # Update the index with the new embeddings
+        if index_type == 'research_data':
+            self.research_db.add_documents(embeddings)
+        elif index_type == 'documents':
+            self.documents_db.add_documents(embeddings)
+        else:
+            raise ValueError(f"Unsupported index type: {index_type}")
+
+        # Persist the updated index
+        if index_type == 'research_data':
+            self.research_db.persist()
+        elif index_type == 'documents':
+            self.documents_db.persist()
         else:
             raise ValueError(f"Unsupported index type: {index_type}")
